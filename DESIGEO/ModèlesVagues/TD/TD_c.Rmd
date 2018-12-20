@@ -1,0 +1,251 @@
+---
+title: "TD : Objets flous spatialisés"
+output:
+  pdf_document: default
+  html_document:
+    df_print: paged
+---
+
+# Introduction
+
+L'objectif de ce TD est de vous initier à la manipulation d'objets spatiaux flous, et ce en essayant de traiter un cas réel et compliqué, celui de l'identification des tronçons de route situés sur les rives de torrents. Dans un premier temps nous allons voir comment construire un objet spatial flou à partir de géométries vectorielles classiques, puis nous procéderons à des opérations entre objets flous avant d'aborder la question de la sélection floue.
+
+## Préparation de l'environnement de travail
+
+La première étape consiste à supprimer tous les objets présents dans votre environnement de travail **R** afin d'éviter les effets de bords dans le cas où une précédente session est toujours active.
+
+```{r, eval=FALSE}
+rm(list=ls())
+```
+
+Puis on charge les bibliothèques nécessaires à ce travail. Si ces dernières ne sont pas installées vous pouvez utiliser la fonction **install.packages()**
+
+```{r, eval=FALSE}
+library("raster")
+library("rgdal")
+```
+
+Vous pouvez ensuite configurer le répertoire de travail. Pensez à changer le dossier en fonction de votre poste de travail.
+
+```{r, eval=FALSE}
+setwd("~/Cours/DESIGEO/ModèlesVagues/TD")
+```
+
+La préparation étant terminée nous pouvons aborder le TD à proprement parler.
+
+# Partie 1 : Création d'un objet flou
+
+Pour commencer nous allons créer un objet spatial flou. Je vous propose de créer une représentation floue de torrents alpins. Le lit de ces derniers peut varier de manière significative entre l'hiver et le printemps, par conséquent il est difficile de fixer une limite nette à ces objets, doit-on se baser sur l'étendue minimale, maximale, moyenne, etc. De son côté l'ign à choisi de représenter ces objets avec différents polygones, certains représentant des surfaces d'eau permanentes et d'autres des surface d'eau intermittentes L'objectif de cette partie est de créer un objet flou à partir de ces données.
+
+## Mise en place
+
+Importez la couche *Surface_eau.shp* présente dans le répertoire du TD à l'aide de la commande suivante :
+
+```{r, eval=FALSE}
+surface_eau <- readOGR("./Data/Surface_eau.shp")
+```
+
+Vous définirez ensuite un raster vide dont les caractéristiques servirons de modèle pour la création des prochains rasters.
+
+```{r, eval=FALSE}
+# Création d'un raster vide
+grid <- raster()
+# Son étendue est fixée à partir de l'étendue de la couche surface_eau
+extent(grid) <- extent(surface_eau)
+# Sa résolution est fixée à 5m
+res(grid) <- 5
+```
+
+1. A partir de la couche **surface_eau** créez deux nouvelles couches, la première composée uniquement des *surfaces d'eau permanentes* et une autre composée *uniquement des surfaces d'eau intermittentes.* Vous devez utiliser la syntaxe suivante en l'adaptant à votre requête.
+
+```{r, eval=FALSE}
+nouvelle_table <- table[condition de sélection des lignes,]
+```
+
+```{r, eval=FALSE, include=FALSE}
+# Sélection des surfaces d'eau permanentes
+surface_eau_perm <- surface_eau[
+  surface_eau$REGIME=="Permanent" & 
+    surface_eau$NATURE=="Surface d'eau",]
+```
+
+```{r, eval=FALSE, include=FALSE}
+# Sélection des surfaces d'eau intermittentes
+surface_eau_inte <- surface_eau[
+  surface_eau$REGIME=="Intermittent" & 
+    surface_eau$NATURE=="Surface d'eau",]
+```
+
+2. Transformez ces couches en raster à l'aide de la fonction **rasterize()** en activant l'option **getCover** (c'est normal si c'est un peu lent). 
+
+```{r, eval=FALSE}
+# rasterisation
+surface_eau_perm_r <- rasterize(surface_eau_perm, grid, getCover=TRUE)
+surface_eau_inte_r <- rasterize(surface_eau_inte, grid, getCover=TRUE)
+```
+
+Cette opération étant couteuse en mémoire vous pouvez ensuite appeler le *grabage collector* afin de libérer un peu de mémoire pour la suite :
+
+```{r, eval=FALSE}
+gc()
+```
+
+Nous allons maintenant transformer ces deux rasters en un objet spatial flou représentant les rivières. Pour ce faire nous allons procéder en deux étapes. Dans un premier temps nous allons définir une fonction permettant de calculer, pour les deux rasters construits, un degré d'appartenance à l'ensemble flous rivière, puis nous agrégerons ces deux raster pour construire l'objet final.
+
+## Création des sous-ensembles flous
+
+Pour calculer le degré d'appartenance d'une cellule du raster à un ensemble flou il est nécessaire ce définir une fonction d'appartenance, *i.e.* une fonction associant à chaque cellule une valeur entre 0 et 1. Lors de l'opération de rasterisation (cf. question 2) il était précisé d'activer l'option **getCover**, cette dernière active le calcul de la part de l'aire des cellules intersectée par la géométrie rasterisée. Cette dernière pouvant varier de 0 à 100. Je vous propose d'utiliser ce critère pour calculer le degré d'appartenance, avec la règle suivante: si plus de 75% de la superficie d'une cellule est couverte alors le degré d'appartenance est de 1, sinon il est de x/75 (avec x la part de l'aire couverte).
+
+3. Implémentez la fonction décrite ci-dessus.
+
+```{r, eval=FALSE, include=FALSE}
+fuzzyfi_surface_eau <-function(x){
+  val <- 1
+  if (x[1] < 75) {
+    val <- x[1]/75
+  }
+  return(val)
+}
+```
+
+Une fois cette fonction crée on peut l'utiliser pour transformer les deux couches crées à la question 1 en objets flous.
+
+4. Créez deux nouveaux rasters en appliquant aux raster précédents la fonction que vous venez de définir (à l'aide de la fonction **calc**).
+
+```{r, eval=FALSE, include=FALSE}
+fuzzy_surface_eau_perm_r <- calc(surface_eau_perm_r, fun=fuzzyfi_surface_eau)
+fuzzy_surface_eau_inte_r <- calc(surface_eau_inte_r, fun=fuzzyfi_surface_eau)
+```
+
+## Combinaison des sous-ensembles flous
+
+Après avoir calculé deux objets flous, il est temps de les agréger pour construire l'objet flou **surface_eau**. Pour ce faire il va falloir écrire une nouvelle fonction calculant un degré d'appartenance en fonction du degré des deux rasters calculés lors de la question 4. 
+
+5. Définissez la fonction d'appartenance suivante. Quelle règle a été choisie ? Quelle est sa signification ?
+
+```{r, eval=FALSE}
+fuzzy_combinaison <- function(x, y){
+  val <- 0
+  if(x[1]!= 0 || y[1]!= 0){
+    val <- max(x/2,y)
+  }
+  return(val)
+}
+```
+
+6. Combinez les deux rasters crées à la question 4 à l'aide de la fonction que vous venez de définir (utilisez les fonctions **overlay()** et **Vectorize()**). 
+
+```{r, eval=FALSE, include=FALSE}
+fuzzy_surface_eau_final <- overlay(
+  fuzzy_surface_eau_inte_r, 
+  fuzzy_surface_eau_perm_r,
+  # L'appel à la fonction vectorize permet de 
+  fun=Vectorize(fuzzy_combinaison))
+```
+
+7. Exportez le raster nouvellement crée, importez le dans QGIS. Que pensez-vous du résultat ?
+
+```{r, eval=FALSE}
+writeRaster(fuzzy_surface_eau_final, "fuzzy_surface_eau_final", overwrite=TRUE)
+```
+
+Si tout s'est bien passé vous venez de créer votre premier objet flou, félicitations.
+
+# Partie 2 : Construction de l'objet **rives**
+
+Maintenant que nous avons construit une représentation floue des rivières,nous pouvons construire une représentation floue des rives de cette dernière. Le processus de construction est similaire, mais il présente une particularité, puisque il s'agit ici de construire un objet flous à partir d'un objet déjà flou, contrairement à la partie précédente.
+
+## Mise en place
+
+8. Commencez par copier la couche crée lors de la question 7 (pour éviter d'écraser votre travail).
+
+```{r, eval=FALSE, include=FALSE}
+temp_layer <- fuzzy_surface_eau_perm_r
+```
+
+9. A l'aide de la fonction **distance()** calculez la distance entre les cellules dont le degré d'appartenance est nul et la cellule de degré d'appartenance non nul la plus proche. Pensez à lire la documentation de la fonction **distance()**, au risque de rater une étape.
+
+```{r, eval=FALSE, include=FALSE}
+values(temp_layer)[values(temp_layer) == 0] = NA
+distance_surface_eau <- distance(temp_layer)
+```
+
+10. Écrivez la fonction de fuzzification suivante. Quel est son fonctionnement ? Que représente l'objet flou **fuzzy_near** ? 
+
+```{r, eval=FALSE}
+fuzzy_near <- function(x){
+  val <- 0
+  if(x[1] < 100){
+    val <- x[1] * -1/100 + 1
+  }
+  return(val)
+}
+```
+
+11. Calculez, visualisez et commentez le raster **fuzzy_distance** définit ci-dessous.
+
+```{r, eval=FALSE}
+fuzzy_distance <- calc(distance_surface_eau, fun=fuzzy_near)
+```
+
+12. Calculez l'objet rive à l'aide de la fonction suivante. Sachant que la fonction **min()** permet de calculer l'intersection de deux ensembles flous et que le complémentaire d'un ensemble flou de fonction d'appartenance y est 1-y, que déduisez-vous de cette fonction ? Comment est définit l'objet rives ?
+
+```{r, eval=FALSE}
+fuzzy_imp <-  function(x,y){
+  val <- min(x[1], 1-y[1])
+  return(val)
+}
+```
+
+```{r, eval=FALSE}
+fuzzy_bank <- overlay(
+  fuzzy_distance, 
+  fuzzy_surface_eau_final, 
+  fun=Vectorize(fuzzy_imp))
+```
+
+# Partie 3: Sélection floue des routes 
+
+Dans cette dernière partie nous allons effectuer une sélection floue, *i.e* que nous allons attribuer à chaque objet un degré d'appartenance calculé en fonction de son degré de validation d'une règle 
+
+Encore une fois on commence par importer les données qui seront nécessaires pour ce travail.
+
+```{r, eval=FALSE}
+Route <- readOGR("./Data/Route_segments.shp")
+```
+
+13. Écrivez une boucle permettant, pour chaque géométrie de la la couche **Route**, de calculer le minimum de la valeur des cellules du raster **fuzzy_bank** intersectées par la géométrie (faites appel à la fonction **extract()**)
+
+```{r, eval=FALSE, include=FALSE}
+out_val <- c()
+for (i in 1:length(Route)) {
+  val <- extract(fuzzy_bank, Route[i,])[[1]]
+  rval <- min(val)
+  out_val <- c(out_val, rval)
+  }
+```
+
+14. Ajoutez les données nouvellement calculées à la couche **Route** (à l'aide de la fonction **cbind()**)
+
+```{r, eval=FALSE, include=FALSE}
+Route@data <- cbind(Route@data,out_val)
+```
+
+15. Utilisez les fonction suivantes pour filtrer et exporter la couche, puis visualisez-la dans QGIS et commentez le résultat obtenu.
+
+```{r, eval=FALSE}
+# On retire les Valeur 'Inf', i.e. les segments sortant du raster.
+Route_filt <- Route[Route$out_val != Inf,]
+```
+
+```{r, eval=FALSE}
+writeOGR(Route_filt, "./out2.shp", "Route_filt",driver = "ESRI Shapefile")
+```
+
+# Bonus (Dans QGIS)
+
+1. Créez un buffer de 100m autour des surfaces d'eau intermittentes et permanentes
+
+2. Sélectionnez tous les segments de route intersectant un buffer
+
+3. Comparer le résultat de cette sélection avec le résultat de la partie 3, qu'en pensez-vous ?
